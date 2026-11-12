@@ -3,6 +3,9 @@ import pickle
 import requests
 from concurrent.futures import ThreadPoolExecutor
 
+from sklearn.feature_extraction.text import CountVectorizer
+from sklearn.metrics.pairwise import cosine_similarity
+
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -10,12 +13,15 @@ from fastapi.templating import Jinja2Templates
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
-# Load the model artifacts once at startup.
+# Load movie metadata once at startup.
 movie_file_path = os.path.join(BASE_DIR, "movie_list.pkl")
-similarity_file_path = os.path.join(BASE_DIR, "similarity.pkl")
-
 movies = pickle.load(open(movie_file_path, "rb"))
-similarity = pickle.load(open(similarity_file_path, "rb"))
+
+# Build the similarity matrix from tags (avoids the large LFS-hosted similarity.pkl
+# and works on hosts like Render that do not have git-lfs installed).
+_tags = movies["tags"].apply(lambda x: " ".join(x))
+_vectors = CountVectorizer(max_features=5000, stop_words="english").fit_transform(_tags)
+similarity = cosine_similarity(_vectors)
 
 TMDB_API_KEY = os.getenv("TMDB_API_KEY", "8265bd1679663a7ea12ac168da84d2e8")
 TMDB_IMAGE_BASE = "https://image.tmdb.org/t/p/w500/"

@@ -15,7 +15,7 @@ Open http://127.0.0.1:8000
 
 ## Deploy to Render
 
-1. Push this repo to GitHub (pickle files are stored with Git LFS).
+1. Push this repo to GitHub.
 2. In Render, create a new **Web Service** and connect the repo (or use the
    included `render.yaml` as a Blueprint).
 3. Build command: `pip install -r requirements.txt`
