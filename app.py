@@ -1,77 +1,89 @@
-import pickle
-import streamlit as st
-import requests
-
 import os
 import pickle
+import requests
+from concurrent.futures import ThreadPoolExecutor
 
-# Get the current directory of the app.py file
-current_dir = os.path.dirname(os.path.abspath(__file__))
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
+from fastapi.templating import Jinja2Templates
 
-# Use full path to load the pickle files
-movie_file_path = os.path.join(current_dir, 'movie_list.pkl')
-similarity_file_path = os.path.join(current_dir, 'similarity.pkl')
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
-# Load the files
-movies = pickle.load(open(movie_file_path, 'rb'))
-similarity = pickle.load(open(similarity_file_path, 'rb'))
+# Load the model artifacts once at startup.
+movie_file_path = os.path.join(BASE_DIR, "movie_list.pkl")
+similarity_file_path = os.path.join(BASE_DIR, "similarity.pkl")
 
+movies = pickle.load(open(movie_file_path, "rb"))
+similarity = pickle.load(open(similarity_file_path, "rb"))
 
+TMDB_API_KEY = os.getenv("TMDB_API_KEY", "8265bd1679663a7ea12ac168da84d2e8")
+TMDB_IMAGE_BASE = "https://image.tmdb.org/t/p/w500/"
 
 
 def fetch_poster(movie_id):
-    url = "https://api.themoviedb.org/3/movie/{}?api_key=8265bd1679663a7ea12ac168da84d2e8&language=en-US".format(movie_id)
-    data = requests.get(url)
-    data = data.json()
-    poster_path = data['poster_path']
-    full_path = "https://image.tmdb.org/t/p/w500/" + poster_path
-    return full_path
+    """Fetch a movie poster URL from TMDB, with a safe fallback."""
+    try:
+        url = (
+            "https://api.themoviedb.org/3/movie/{}?api_key={}&language=en-US".format(
+                movie_id, TMDB_API_KEY
+            )
+        )
+        data = requests.get(url, timeout=8).json()
+        poster_path = data.get("poster_path")
+        if poster_path:
+            return TMDB_IMAGE_BASE + poster_path
+    except Exception:
+        pass
+    return "https://via.placeholder.com/500x750/1f2937/9ca3af?text=No+Poster"
+
 
 def recommend(movie):
-    index = movies[movies['title'] == movie].index[0]
-    distances = sorted(list(enumerate(similarity[index])), reverse=True, key=lambda x: x[1])
-    recommended_movie_names = []
-    recommended_movie_posters = []
-    for i in distances[1:6]:
-        # fetch the movie poster
-        movie_id = movies.iloc[i[0]].movie_id
-        recommended_movie_posters.append(fetch_poster(movie_id))
-        recommended_movie_names.append(movies.iloc[i[0]].title)
+    index = movies[movies["title"] == movie].index[0]
+    distances = sorted(
+        list(enumerate(similarity[index])), reverse=True, key=lambda x: x[1]
+    )
+    selected = [(movies.iloc[i[0]].movie_id, movies.iloc[i[0]].title) for i in distances[1:6]]
 
-    return recommended_movie_names,recommended_movie_posters
-
-
-st.header('Movie Recommender System')
-movies = pickle.load(open('movie_list.pkl','rb'))
-similarity = pickle.load(open('similarity.pkl','rb'))
-
-movie_list = movies['title'].values
-selected_movie = st.selectbox(
-    "Type or select a movie from the dropdown",
-    movie_list
-)
-
-if st.button('Show Recommendation'):
-    recommended_movie_names,recommended_movie_posters = recommend(selected_movie)
-    col1, col2, col3, col4, col5 = st.columns(5)
-    with col1:
-        st.text(recommended_movie_names[0])
-        st.image(recommended_movie_posters[0])
-    with col2:
-        st.text(recommended_movie_names[1])
-        st.image(recommended_movie_posters[1])
-
-    with col3:
-        st.text(recommended_movie_names[2])
-        st.image(recommended_movie_posters[2])
-    with col4:
-        st.text(recommended_movie_names[3])
-        st.image(recommended_movie_posters[3])
-    with col5:
-        st.text(recommended_movie_names[4])
-        st.image(recommended_movie_posters[4])
+    recommended_movie_names = [title for _, title in selected]
+    with ThreadPoolExecutor(max_workers=5) as executor:
+        recommended_movie_posters = list(executor.map(lambda x: fetch_poster(x[0]), selected))
+    return recommended_movie_names, recommended_movie_posters
 
 
+app = FastAPI(title="Movie Recommender System")
+
+templates_dir = os.path.join(BASE_DIR, "templates")
+static_dir = os.path.join(BASE_DIR, "static")
+os.makedirs(templates_dir, exist_ok=True)
+os.makedirs(static_dir, exist_ok=True)
+
+templates = Jinja2Templates(directory=templates_dir)
+app.mount("/static", StaticFiles(directory=static_dir), name="static")
 
 
+@app.get("/healthz")
+async def healthz():
+    return {"status": "ok"}
 
+
+@app.get("/api/movies")
+async def api_movies():
+    return {"movies": movies["title"].tolist()}
+
+
+@app.get("/api/recommend")
+async def api_recommend(movie: str):
+    if movie not in set(movies["title"].tolist()):
+        raise HTTPException(status_code=404, detail="Movie not found")
+    names, posters = recommend(movie)
+    return {"names": names, "posters": posters}
+
+
+@app.get("/", response_class=HTMLResponse)
+async def home(request: Request):
+    return templates.TemplateResponse(
+        request,
+        "index.html",
+        {"request": request, "movies": movies["title"].tolist()},
+    )
